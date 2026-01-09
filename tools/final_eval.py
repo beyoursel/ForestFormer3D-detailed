@@ -10,9 +10,10 @@ import os
 #and save these stats in a file called "Eval_F1_per_region"
 if __name__ == '__main__':
     import sys
-    test_sem_path = sys.argv[1]
+    # test_sem_path = sys.argv[1]
+    test_sem_path = "/media/mydisk/download_data/oneformer3d_qs_radius8_qp300_2many_epoch3000_testset"
     #initialization
-    NUM_CLASSES = 3  # @Treeins: classes unclassified, non-tree and tree
+    NUM_CLASSES = 3  # @Treeins: classes unclassified, non-tree and tree # 0， 1， 2分别为未分类的、非树的、树的
     NUM_CLASSES_sem = 4
     NUM_CLASSES_count = 3  # @Treeins: 2 classes without unclassified
     # class index for instance segmenatation
@@ -38,15 +39,15 @@ if __name__ == '__main__':
             LOG_FOUT.flush()
         print(out_str)
 
-    true_positive_classes_global = np.zeros(NUM_CLASSES_sem)
+    true_positive_classes_global = np.zeros(NUM_CLASSES_sem) # TP
     positive_classes_global = np.zeros(NUM_CLASSES_sem)
-    gt_classes_global = np.zeros(NUM_CLASSES_sem)
+    gt_classes_global = np.zeros(NUM_CLASSES_sem) # global GT
 
-    total_gt_ins_global = np.zeros(NUM_CLASSES)
-    tpsins_global = [[] for _ in range(NUM_CLASSES)]
-    fpsins_global = [[] for _ in range(NUM_CLASSES)]
-    IoU_Tp_global = np.zeros(NUM_CLASSES)
-    IoU_Mc_global = np.zeros(NUM_CLASSES)
+    total_gt_ins_global = np.zeros(NUM_CLASSES) # total GT instances
+    tpsins_global = [[] for _ in range(NUM_CLASSES)] # TP instances
+    fpsins_global = [[] for _ in range(NUM_CLASSES)] # FP instances
+    IoU_Tp_global = np.zeros(NUM_CLASSES) # TP IoU
+    IoU_Mc_global = np.zeros(NUM_CLASSES) # MC IoU ???
 
     all_mean_cov_global = [[] for _ in range(NUM_CLASSES)]
     all_mean_weighted_cov_global = [[] for _ in range(NUM_CLASSES)]
@@ -54,6 +55,7 @@ if __name__ == '__main__':
     ply_files = sorted(glob.glob(test_sem_path + '/*.ply', recursive=False))
 
     for ply_file in ply_files:
+        # 处理单个场景的点云数据
         true_positive_classes = np.zeros(NUM_CLASSES_sem)
         positive_classes = np.zeros(NUM_CLASSES_sem)
         gt_classes = np.zeros(NUM_CLASSES_sem)
@@ -79,34 +81,46 @@ if __name__ == '__main__':
         #data.elements[0].data["semantic_gt"] = semantic_gt
         ##################wythan wood#################################
 
-        sem_pre_i = data.elements[0].data["semantic_pred"] + 1
-        sem_gt_i = data.elements[0].data["semantic_gt"] + 1
+        sem_pre_i = data.elements[0].data["semantic_pred"] + 1 # change to [1, 2, 3]
+        sem_gt_i = data.elements[0].data["semantic_gt"] + 1 # 真值label
         #sem_pre_i = data.elements[0].data["semantic_prediction_label"] + 1
         #sem_gt_i = data.elements[0].data["semantic_labels"] + 1
 
-        ins_pre_i_ori = data.elements[0].data["instance_pred"]
-        ins_gt_i_ori = data.elements[0].data["instance_gt"]
+        unique_pre = np.unique(sem_pre_i)
+        unique_gt = np.unique(sem_gt_i)
+
+        print("semantic_pred 类别:", unique_pre)
+        print("semantic_gt 类别:", unique_gt)
+
+        ins_pre_i_ori = data.elements[0].data["instance_pred"] # 预测的实例点label
+        ins_gt_i_ori = data.elements[0].data["instance_gt"] # 真值的实例点label
         #ins_pre_i_ori = data.elements[0].data["instance_preds"]
         #ins_gt_i_ori = data.elements[0].data["instance_labels"]
 
+        unique_ins_pre = np.unique(ins_pre_i_ori)
+        unique_ins_gt = np.unique(ins_gt_i_ori)
+
+        print("ins_pre_i_ori 类别:", unique_ins_pre)
+        print("ins_gt_i_ori 类别:", unique_ins_gt)
 
         pred_sem_complete = sem_pre_i
         gt_sem_complete = sem_gt_i
         pred_ins_complete = ins_pre_i_ori
         gt_ins_complete = ins_gt_i_ori
-
-        idxc = ((gt_sem_complete != 0) & (gt_sem_complete != 1)) | ((pred_sem_complete != 0) & (pred_sem_complete != 1))
-        pred_ins = pred_ins_complete[idxc]
+        # 只要 GT 是“其它类” 或 预测是“其它类”，这个点就被选中
+        # 也就是说下面的idxc为参与评估的有效点
+        idxc = ((gt_sem_complete != 0) & (gt_sem_complete != 1)) | ((pred_sem_complete != 0) & (pred_sem_complete != 1)) 
+        pred_ins = pred_ins_complete[idxc] # 索引点有效点
         gt_ins = gt_ins_complete[idxc]
         pred_sem = pred_sem_complete[idxc]
         gt_sem = gt_sem_complete[idxc]
-
-        for j in range(gt_sem_complete.shape[0]):
+        # 统计语义分割结果
+        for j in range(gt_sem_complete.shape[0]): # eval gt_sem 
             gt_l = int(gt_sem_complete[j])
             pred_l = int(pred_sem_complete[j])
             gt_classes[gt_l] += 1
             positive_classes[pred_l] += 1
-            true_positive_classes[gt_l] += int(gt_l == pred_l)
+            true_positive_classes[gt_l] += int(gt_l == pred_l) # TP
 
         predicted_labels_copy = pred_sem_complete.copy()
         for i in stuff_classes:
