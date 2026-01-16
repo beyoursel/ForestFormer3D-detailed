@@ -595,7 +595,7 @@ class ForAINetv2QueryDecoder_XAwarequery(BaseModule):
         self.cross_attn_layers = nn.ModuleList([])
         self.self_attn_layers = nn.ModuleList([])
         self.ffn_layers = nn.ModuleList([])
-        for i in range(num_layers):
+        for i in range(num_layers): # six layer transformer
             self.cross_attn_layers.append(
                 CrossAttentionLayer(
                     d_model, num_heads, dropout, fix_attention))
@@ -646,7 +646,7 @@ class ForAINetv2QueryDecoder_XAwarequery(BaseModule):
                 # concat queries[i] and semantic_queries
                 if len(queries[i]) == 0:
                     queries[i] = torch.empty(0, *semantic_queries.shape[1:]).to(device)
-                concat_queries = torch.cat((queries[i], semantic_queries.to(queries[i].device)), dim=0)
+                concat_queries = torch.cat((queries[i], semantic_queries.to(queries[i].device)), dim=0) # 将实例query和语义query进行拼接
                 result_query.append(self.query_proj(concat_queries))
             result_queries.append(torch.cat(result_query))
         return result_queries
@@ -675,10 +675,10 @@ class ForAINetv2QueryDecoder_XAwarequery(BaseModule):
         #cls_preds, pred_scores, pred_masks, attn_masks = [], [], [], []
         pred_scores, pred_masks, attn_masks = [], [], []
         for i in range(len(queries)):
-            norm_query = self.out_norm(queries[i]) # [403, 256]
-            #cls_preds.append(self.out_cls(norm_query))   # [403, 4]
+            norm_query = self.out_norm(queries[i]) # [303, 256]
+            #cls_preds.append(self.out_cls(norm_query))   # [303, 4]
             pred_score = self.out_score(norm_query) if self.objectness_flag \
-                else None    #[403, 1]
+                else None    #[303, 1]
             pred_scores.append(pred_score)
             pred_mask = torch.einsum('nd,md->nm', norm_query, mask_feats[i])  #mask_feats:[38584, 256] -> [403, 38584]
             if self.attn_mask:
@@ -689,8 +689,8 @@ class ForAINetv2QueryDecoder_XAwarequery(BaseModule):
                 attn_masks.append(attn_mask)
             pred_masks.append(pred_mask)
         attn_masks = attn_masks if self.attn_mask else None
-        #return cls_preds, pred_scores, pred_masks, attn_masks  #[403, 4]  [403, 1]  [403, 38584]  [403, 38584]
-        return pred_scores, pred_masks, attn_masks  #[403, 1]  [403, 38584]  [403, 38584]
+        #return cls_preds, pred_scores, pred_masks, attn_masks  #[303, 4]  [303, 1]  [303, 38584]  [403, 38584]
+        return pred_scores, pred_masks, attn_masks  #[303, 1]  [303, 38584]  [303, 38584]
 
     def forward_simple(self, x, queries):
         """Simple forward pass.
@@ -735,18 +735,18 @@ class ForAINetv2QueryDecoder_XAwarequery(BaseModule):
         pred_scores, pred_masks = [], []
         inst_feats = [self.input_proj(y) for y in x]  #[38584, 256]  [37025,256]
         mask_feats = [self.x_mask(y) for y in x]   #[38584, 256]  [37025,256]
-        queries = self._get_queries(queries, len(x))  #2 x [403, 256]
+        queries = self._get_queries(queries, len(x))  #2 x [303, 256]
         #queries = queries.to(mask_feats.device)
         #cls_pred, pred_score, pred_mask, attn_mask = self._forward_head(
         pred_score, pred_mask, attn_mask = self._forward_head(
-            queries, mask_feats)
+            queries, mask_feats) # 生成attn_mask
         #cls_preds.append(cls_pred)
         pred_scores.append(pred_score)
         pred_masks.append(pred_mask)
         for i in range(len(self.cross_attn_layers)):
             queries = self.cross_attn_layers[i](inst_feats, queries, attn_mask)
             queries = self.self_attn_layers[i](queries)
-            queries = self.ffn_layers[i](queries)  #2 x [403, 256]
+            queries = self.ffn_layers[i](queries)  # bs x [303, 256]
             #cls_pred, pred_score, pred_mask, attn_mask = self._forward_head(
             pred_score, pred_mask, attn_mask = self._forward_head(
                 queries, mask_feats)
@@ -758,7 +758,7 @@ class ForAINetv2QueryDecoder_XAwarequery(BaseModule):
             #{'cls_preds': cls_pred, 'masks': masks, 'scores': scores}
             {'masks': masks, 'scores': scores}
             for scores, masks in zip(
-                pred_scores[:-1], pred_masks[:-1])]
+                pred_scores[:-1], pred_masks[:-1])] # exclude the final output
         return dict(
             #cls_preds=cls_preds[-1],
             masks=pred_masks[-1],

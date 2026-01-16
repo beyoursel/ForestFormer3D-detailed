@@ -1,0 +1,135 @@
+# create env
+conda create -n forestformer3d python=3.10 -y
+# install torch
+conda install pytorch==1.13.1 torchvision==0.14.1 torchaudio==0.13.1 pytorch-cuda=11.6 -c pytorch -c nvidia -y
+# install mmdet3d
+pip install --no-deps \
+    mmengine==0.7.3 \
+    mmdet==3.0.0 \
+    mmsegmentation==1.0.0
+
+
+pip install --no-deps --no-build-isolation \
+  git+https://github.com/open-mmlab/mmdetection3d.git@22aaa47fdb53ce1870ff92cb7e3f96ae38d17f61
+
+pip install mmcv==2.0.0 -f https://download.openmmlab.com/mmcv/dist/cu116/torch1.13.0/index.html --no-deps
+ 
+
+# install MinkowkiEngine
+git clone git@github.com:NVIDIA/MinkowskiEngine.git
+git checkout 02fc608bea4c0549b0a7b00ca1bf15dee4a0b228
+
+conda install openblas-devel -c anaconda
+export CUDA_HOME=/usr/local/cuda-11.6
+export LIBRARY_PATH=$CONDA_PREFIX/lib
+export LD_LIBRARY_PATH=$CONDA_PREFIX/lib
+cd MinkowskiEngine
+python setup.py install --blas_include_dirs=${CONDA_PREFIX}/include --blas=openblas
+
+# install torch_scatter
+# from https://data.pyg.org/whl/torch-1.13.1%2Bcu116.html
+# download torch_scatter-2.0.9-cp310-cp310-linux_x86_64.whl
+pip install torch_scatter-2.0.9-cp310-cp310-linux_x86_64.whl
+
+# install segmentator
+conda install -y cmake=3.26
+git clone git@github.com:Karbo123/segmentator.git
+cd segmentator/csrc
+git reset --hard 76efe46d03dd27afa78df972b17d07f2c6cfb696
+cmake ..   -DCMAKE_PREFIX_PATH=$(python - <<'EOF'
+import torch
+print(torch.utils.cmake_prefix_path)
+EOF
+)   -DPYTHON_INCLUDE_DIR=$(python - <<'EOF'
+import sysconfig
+print(sysconfig.get_paths()["include"])
+EOF
+)   -DPYTHON_LIBRARY=$(python - <<'EOF'
+import sysconfig
+print(sysconfig.get_config_var("LIBDIR") + "/libpython3.10.so")
+EOF
+)   -DCMAKE_INSTALL_PREFIX=$(python - <<'EOF'
+import sysconfig
+print(sysconfig.get_paths()["purelib"])
+EOF
+)
+
+make 
+make install
+
+# install dependency
+pip install --no-deps \
+    spconv-cu116==2.3.6 \
+    addict==2.4.0 \
+    yapf==0.33.0 \
+    termcolor==2.3.0 \
+    packaging==23.1 \
+    numpy==1.24.1 \
+    rich==13.3.5 \
+    opencv-python==4.7.0.72 \
+    pycocotools==2.0.6 \
+    Shapely==1.8.5 \
+    scipy==1.10.1 \
+    terminaltables==3.1.10 \
+    numba==0.57.0 \
+    llvmlite==0.40.0 \
+    pccm==0.4.7 \
+    ccimport==0.4.2 \
+    pybind11==2.10.4 \
+    ninja==1.11.1 \
+    lark==1.1.5 \
+    cumm-cu116==0.4.9 \
+    pyquaternion==0.9.9 \
+    lyft-dataset-sdk==0.0.8 \
+    pandas==2.0.1 \
+    python-dateutil==2.8.2 \
+    matplotlib==3.5.2 \
+    pyparsing==3.0.9 \
+    cycler==0.11.0 \
+    kiwisolver==1.4.4 \
+    scikit-learn==1.2.2 \
+    joblib==1.2.0 \
+    threadpoolctl==3.1.0 \
+    cachetools==5.3.0 \
+    nuscenes-devkit==1.1.10 \
+    trimesh==3.21.6 \
+    open3d==0.17.0 \
+    plotly==5.18.0 \
+    dash==2.14.2 \
+    plyfile==1.0.2 \
+    flask==3.0.0 \
+    werkzeug==3.0.1 \
+    click==8.1.7 \
+    blinker==1.7.0 \
+    itsdangerous==2.1.2 \
+    importlib_metadata==2.1.2 \
+    zipp==3.17.0 \
+    tensorboard==2.15.1 \
+    tensorboard-data-server==0.7.2 \
+    protobuf \
+    absl-py \
+    future \
+    MarkupSafe==2.0.1 \
+    markdown \
+    grpcio \
+    google-auth-oauthlib \
+    google-auth \
+    requests-oauthlib \
+    oauthlib
+
+# install torch-points-kernels
+pip install --no-deps --no-build-isolation  --no-cache-dir\
+    torch-points-kernels==0.7.0
+
+# install torch-cluster
+pip uninstall torch-cluster
+
+pip install --no-deps --no-build-isolation  --no-cache-dir  torch-cluster
+
+
+# preprocess dataset
+pip install laspy
+pip install "laspy[lazrs]"
+
+
+export PYTHONPATH=$(pwd):$PYTHONPATH

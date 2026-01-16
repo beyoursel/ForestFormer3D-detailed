@@ -1,3 +1,7 @@
+import sys
+import os
+sys.path.insert(0, os.path.abspath(os.path.join(__file__, '..', '..')))
+
 # This is an exact copy of tools/train.py from open-mmlab/mmdetection3d.
 import argparse
 import logging

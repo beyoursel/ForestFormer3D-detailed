@@ -1763,15 +1763,16 @@ class ForAINetV2OneFormer3D_XAwarequery(Base3DDetector):
                  #prepare_epoch2=None,
                  radius = 16,
                  score_th = 0.4,
-                 chunk = 20_000):
+                 chunk = 20_000,
+                 save_ply_vis = False):
         super(Base3DDetector, self).__init__(
             data_preprocessor=data_preprocessor, init_cfg=init_cfg)
         self.unet = MODELS.build(backbone)
         self.decoder = MODELS.build(decoder)
         self.criterion = MODELS.build(criterion)
-        self.voxel_size = voxel_size
+        self.voxel_size = voxel_size # 0.2m
         self.num_classes = num_classes
-        self.min_spatial_shape = min_spatial_shape
+        self.min_spatial_shape = min_spatial_shape # 最小空间形状128
         self.stuff_classes = stuff_classes
         self.thing_cls = thing_cls
         self.train_cfg = train_cfg
@@ -1785,6 +1786,7 @@ class ForAINetV2OneFormer3D_XAwarequery(Base3DDetector):
         self.radius = radius
         self.score_th = score_th
         self.chunk = chunk
+        self.save_ply_vis = save_ply_vis
         self.BiSemantic = (
             Seq()  
             .append(MLP([num_channels, num_channels], bias=False))  
@@ -1854,7 +1856,7 @@ class ForAINetV2OneFormer3D_XAwarequery(Base3DDetector):
         tensor = field.sparse()
         coordinates = tensor.coordinates
         features = tensor.features
-        inverse_mapping = field.inverse_mapping(tensor.coordinate_map_key)
+        inverse_mapping = field.inverse_mapping(tensor.coordinate_map_key) # 每个输入点对应的voxel索引，即输入点的label是基于该voxel预测的，用于回溯
 
         return coordinates, features, inverse_mapping, spatial_shape
 
@@ -2267,8 +2269,9 @@ class ForAINetV2OneFormer3D_XAwarequery(Base3DDetector):
         #########print(f"load pc: {(t1 - t0)*1000:.0f} ms")
         #is_test = True
         #if is_test:
-        if 'test' in lidar_path:
-            step_size = self.radius/4
+        # if 'test' in lidar_path:
+        if 'train' not in lidar_path:
+            step_size = self.radius / 4
             grid_size = 0.2
             num_points = 640000
             pts_semantic_gt = batch_data_samples[0].eval_ann_info['pts_semantic_mask']
@@ -2287,7 +2290,7 @@ class ForAINetV2OneFormer3D_XAwarequery(Base3DDetector):
 
             best_masks = []
 
-            all_instance_labels = set(np.unique(pts_instance_gt))
+            # all_instance_labels = set(np.unique(pts_instance_gt))
             
             ##########output_path = "work_dirs/bluepoint_th04fixed_03_priority_test_tobedelete"
             #########output_path = "work_dirs/bluepoint_forinstancev2"
@@ -2300,21 +2303,21 @@ class ForAINetV2OneFormer3D_XAwarequery(Base3DDetector):
             #########print(f"generate regions: {(t2 - t1)*1000:.0f} ms")
             for region_idx, region in enumerate(tqdm(regions, desc="Processing regions")):
                 t2 = time.time()                 
-                region_mask = ((original_points[:, 0] - region[0]) ** 2 + (original_points[:, 1] - region[1]) ** 2) <= self.radius ** 2
+                region_mask = ((original_points[:, 0] - region[0]) ** 2 + (original_points[:, 1] - region[1]) ** 2) <= self.radius ** 2 # 以(region[0], region[1])为中心，查找半径radius内的点
                 pc1 = original_points[region_mask]
-                pc1_indices = torch.where(region_mask)[0]
+                pc1_indices = torch.where(region_mask)[0] # the indices in origin points
                 t3 = time.time()                 
                 #########print(f"generate regions step2: {(t3 - t2)*1000:.0f} ms")
                 if len(pc1) == 0:
                     continue
-
+                # voxel-downsample && select a point index contained in voxel 
                 pc2, pc2_indices = self.grid_sample(pc1, pc1_indices, grid_size)
                 t4_1_1 = time.time()                 
                 #########print(f"u net 1--1: {(t4_1_1 - t3)*1000:.0f} ms")
-                if len(pc2) < num_points:
+                if len(pc2) < num_points: # 降采样后的点数量少于设定的阈值，则后续直接送入网络
                     pc3 = pc2
                     pc3_indices = pc2_indices
-                elif len(pc2) > num_points:
+                elif len(pc2) > num_points: # 降采样后的点数量超过设定阈值，则进行随机采样num_points个点
                     pc3, pc3_indices = self.points_random_sampling(pc2, pc2_indices, num_points)
                 
                 t4_1_2 = time.time()                 
@@ -2326,15 +2329,15 @@ class ForAINetV2OneFormer3D_XAwarequery(Base3DDetector):
                 x = spconv.SparseConvTensor(features, coordinates, spatial_shape, len(batch_data_samples))
                 t4_3 = time.time() 
                 #########print(f"u net 3: {(t4_3 - t4_2)*1000:.0f} ms")
-                x = self.extract_feat(x)
+                x = self.extract_feat(x) # output: [N_input, 32]
                 t4_4 = time.time() 
                 #########print(f"u net 4: {(t4_4 - t4_3)*1000:.0f} ms")
-                embed_logits = self.Embed(x[0])
-                bi_semantic_logits = self.BiSemantic(x[0]) 
+                embed_logits = self.Embed(x[0]) # 5D embedding feature in paper
+                bi_semantic_logits = self.BiSemantic(x[0]) # binary classification for tree | non-tree
                 
                 wood_class = 1
                 semantic_predictions_bi = torch.argmax(bi_semantic_logits, dim=1)
-                tree_indices = torch.where(semantic_predictions_bi == wood_class)[0]  #all voxel
+                tree_indices = torch.where(semantic_predictions_bi == wood_class)[0]  #all voxel # select tree
                 t5 = time.time()                 
                 #########print(f"u net heads: {(t5 - t4_4)*1000:.0f} ms")  
                 with torch.no_grad():
@@ -2345,7 +2348,7 @@ class ForAINetV2OneFormer3D_XAwarequery(Base3DDetector):
                         nn_idx_pc1.append(
                             torch.cdist(pc1[ss:ee].float(), pc3.float()).argmin(1)
                         )
-                    nn_idx_pc1 = torch.cat(nn_idx_pc1)   # (N_pc1,)  
+                    nn_idx_pc1 = torch.cat(nn_idx_pc1)   # (N_pc1,)  为原始点p1找到最近的pc3，分块计算距离，以减少显存
                 if tree_indices.numel() > 1:
                     
                     # FPS from all tree points
@@ -2355,10 +2358,10 @@ class ForAINetV2OneFormer3D_XAwarequery(Base3DDetector):
 
                     # add content queries
                     queries = []
-                    queries.append(x[0][selected_indices_case4])
+                    queries.append(x[0][selected_indices_case4]) # 基于特征距离进行FPS采样得到query
                     t6 = time.time()                 
                     #########print(f"generate queries: {(t6 - t5)*1000:.0f} ms")  
-                    x = self.decoder(x, queries)
+                    x = self.decoder(x, queries) # improved based on SPFormer
                     t7 = time.time()                 
                     #########print(f"transformer decoder: {(t7 - t6)*1000:.0f} ms")  
                     results_list = self.predict_by_feat_test(x, inverse_mapping2, pc3, selected_indices_case4)
@@ -2481,7 +2484,7 @@ class ForAINetV2OneFormer3D_XAwarequery(Base3DDetector):
                     ids_np = torch.where(region_mask)[0].cpu().numpy()                 # (N_pc1,)
                     sem_np = cylinder_current_semantic_pre.cpu().numpy().astype(int)   # (N_pc1,)
 
-                    np.add.at(votes_counter, (ids_np, sem_np), 1) 
+                    np.add.at(votes_counter, (ids_np, sem_np), 1) # votes_counter记录每个点对应类别被预测的次数
 
                     originids = pc3_indices.cpu().numpy()  # Use pc3_indices for ground truth labels
                     last_results = results_list      
@@ -2501,7 +2504,7 @@ class ForAINetV2OneFormer3D_XAwarequery(Base3DDetector):
                     region_ply_path = os.path.join(region_dir, "pc_ins_sem.ply")
                     self.save_ply(pc3.cpu().numpy(), results_list[0].pts_semantic_mask[0], results_list[0].pts_instance_mask[1], region_ply_path, pc3_semantic_gt, pc3_instance_gt)
                     '''
-                else:
+                else: # 网络预测为tree的点数量为空
                     projected_semantic_logits = bi_semantic_logits[inverse_mapping2]
                     semantic_predictions_pc3 = torch.argmax(projected_semantic_logits, dim=1)
                     #cylinder_current_semantic_pre = self.nearest_neighbor_mapping(pc1, pc3, semantic_predictions_pc3)
@@ -2531,35 +2534,29 @@ class ForAINetV2OneFormer3D_XAwarequery(Base3DDetector):
             #ground_mask = (final_semantic_labels == 0)
 
             final_semantic_labels = votes_counter.argmax(1)         # (N_total,)
-            final_semantic_labels[votes_counter.sum(1) == 0] = -1  
+            final_semantic_labels[votes_counter.sum(1) == 0] = -1 # 未预测为ground、wood、leaf的点的label归为-1 
             ground_mask = (final_semantic_labels == 0)
 
-            all_pre_ins[ground_mask] = -1
+            all_pre_ins[ground_mask] = -1 # 地面实例的实例label置为-1
             t11 = time.time()                 
             #print(f"postprocessing 5: {(t11 - t10)*1000:.0f} ms") 
-            # Remove instances with fewer than 10 points
-            #unique_instances, instance_counts = np.unique(all_pre_ins, return_counts=True)
-            #small_instances = unique_instances[instance_counts < 10]
-            #for instance in small_instances:
-            #    all_pre_ins[all_pre_ins == instance] = -1
-            t11 = time.time()     
             # Remove instances with fewer than 10 points  
             uniq, cnt = np.unique(all_pre_ins, return_counts=True)
-            to_kill   = np.isin(all_pre_ins, uniq[(cnt < 10) & (uniq != -1)])
+            to_kill   = np.isin(all_pre_ins, uniq[(cnt < 10) & (uniq != -1)]) # 将点数少于10个的实例标签置为-1
             all_pre_ins[to_kill] = -1
             t12 = time.time()
-            print(f"postprocessing 6: {(t12 - t11)*1000:.0f} ms")
+            # print(f"postprocessing 6: {(t12 - t11)*1000:.0f} ms")
             # Remove replaced old masks
             unique_best_masks = []
             for mask_points, instance_id, score in best_masks:
                 if np.any(all_pre_ins[mask_points] == instance_id):
                     unique_best_masks.append((mask_points, instance_id, score))
             t13 = time.time()                 
-            print(f"postprocessing 7: {(t13 - t12)*1000:.0f} ms")
+            # print(f"postprocessing 7: {(t13 - t12)*1000:.0f} ms")
 
             clean_all_pre_ins, merged_masks, merged_instance_scores = self.merge_overlapping_instances_by_score_speedup(all_pre_ins, unique_best_masks,overlap_threshold=score_th2)
             t14 = time.time()                 
-            print(f"postprocessing 8: {(t14 - t13)*1000:.0f} ms")
+            # print(f"postprocessing 8: {(t14 - t13)*1000:.0f} ms")
             # Re-label instances to ensure continuous labeling
             unique_labels = np.unique(clean_all_pre_ins)
             unique_labels = unique_labels[unique_labels >= 0]  # Exclude background label (-1)
@@ -2569,9 +2566,9 @@ class ForAINetV2OneFormer3D_XAwarequery(Base3DDetector):
             t14 = time.time()                 
             ######print(f"postprocessing 8: {(t14 - t13)*1000:.0f} ms")
             # Save the final combined results
-            region_path = os.path.join(output_path, f"{current_filename}.ply")
- 
-            self.save_ply_withscore(original_points.cpu().numpy(), final_semantic_labels, clean_all_pre_ins, merged_instance_scores, region_path, pts_semantic_gt, pts_instance_gt)
+            if (self.save_ply_vis):
+                region_path = os.path.join(output_path, f"{current_filename}.ply")
+                self.save_ply_withscore(original_points.cpu().numpy(), final_semantic_labels, clean_all_pre_ins, merged_instance_scores, region_path, pts_semantic_gt, pts_instance_gt)
             #self.save_bluepoints(original_points.cpu().numpy(), final_semantic_labels, clean_all_pre_ins, merged_instance_scores, region_path, pts_semantic_gt, pts_instance_gt)
             
             t15 = time.time()                 
@@ -2580,15 +2577,17 @@ class ForAINetV2OneFormer3D_XAwarequery(Base3DDetector):
             #    data_sample.pred_pts_seg = results_list[i]
             #    data_sample.pred_pts_seg['originids'] = originids
                 #data_sample.originids = originids
+            last_results[0].pts_semantic_mask = final_semantic_labels
+            last_results[0].pts_instance_mask = clean_all_pre_ins
             if last_results is not None and len(last_results)==len(batch_data_samples):                 # 本帧里至少有一个 region 得到了结果
                 for i, data_sample in enumerate(batch_data_samples):
                     data_sample.pred_pts_seg = last_results[i]
-                    data_sample.pred_pts_seg['originids'] = last_originids
+                    # data_sample.pred_pts_seg['originids'] = last_originids
             else:                                      
                 for data_sample in batch_data_samples:
                     data_sample.pred_pts_seg = None
             return batch_data_samples
-        else:
+        else: # for training or validation in paper
             coordinates, features, inverse_mapping, spatial_shape = self.collate(
                 batch_inputs_dict['points'])
             x = spconv.SparseConvTensor(
@@ -2892,8 +2891,8 @@ class ForAINetV2OneFormer3D_XAwarequery(Base3DDetector):
             mask_pred_thr = mask_pred_sigmoid > \
                 self.test_cfg.obj_normalization_thr
             mask_scores = (mask_pred_sigmoid * mask_pred_thr).sum(1) / \
-                (mask_pred_thr.sum(1) + 1e-6)
-            scores = scores * mask_scores
+                (mask_pred_thr.sum(1) + 1e-6) # 过滤不满足阈值条件的，并重新归一化
+            scores = scores * mask_scores # scores为模型预测的pred_scores
 
         if self.test_cfg.get('nms', None):
             kernel = self.test_cfg.matrix_nms_kernel
@@ -2917,13 +2916,13 @@ class ForAINetV2OneFormer3D_XAwarequery(Base3DDetector):
         #        scores[i] = 0
 
         # Compute the binary mask for stuff_cls
-        is_stuff = torch.isin(sem_res, stuff_cls_tensor).float()
+        is_stuff = torch.isin(sem_res, stuff_cls_tensor).float() # 取出地面
         # Multiply mask_pred by the binary mask and sum along the columns
-        mask_scores = (mask_pred * is_stuff).sum(dim=1)
+        mask_scores = (mask_pred * is_stuff).sum(dim=1) # 计算每个mask中的地面点数量
         # Calculate the number of points in each mask
-        num_points_in_mask = mask_pred.sum(dim=1)
+        num_points_in_mask = mask_pred.sum(dim=1) # 计算每个mask中的点数量
         # Set scores to 0 where the majority of points are stuff_cls
-        scores[mask_scores > (num_points_in_mask / 2)] = 0
+        scores[mask_scores > (num_points_in_mask / 2)] = 0 # 当mask中地面点的数量超过自身的一半以上数量，则认为是地面
 
         # Filter instances based on z values
         for i in range(mask_pred.size(0)):
@@ -2932,7 +2931,7 @@ class ForAINetV2OneFormer3D_XAwarequery(Base3DDetector):
                 scores[i] = 0
                 continue
             z_values = coordinates[mask, 2]  # Get z values where mask is True
-            if z_values.numel() > 0 and z_values.min().item() > ground_z_max + 5:
+            if z_values.numel() > 0 and z_values.min().item() > ground_z_max + 5: # 过滤飘在空中的mask，可能是噪点
                 scores[i] = 0
 
         # score_thr
@@ -2963,8 +2962,8 @@ class ForAINetV2OneFormer3D_XAwarequery(Base3DDetector):
             Tensor: semantic preds of shape
                 (n_raw_points, 1).
         """
-        mask_pred = pred_masks.sigmoid()
-        mask_pred = mask_pred[:, superpoints]
+        mask_pred = pred_masks.sigmoid() # [num_cls, num_model_pred]
+        mask_pred = mask_pred[:, superpoints] # superpoints, mapping model_pred to original input before MinkowskiEngine preprocess
         seg_map = mask_pred.argmax(0)
         return seg_map
 

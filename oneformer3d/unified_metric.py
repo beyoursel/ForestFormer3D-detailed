@@ -2,6 +2,7 @@ import torch
 import numpy as np
 from scipy import stats
 from mmengine.logging import MMLogger
+from tqdm import tqdm
 
 from mmdet3d.evaluation import InstanceSegMetric
 from mmdet3d.evaluation.metrics import SegMetric
@@ -53,192 +54,410 @@ class UnifiedSegMetric(SegMetric):
         super().__init__(**kwargs)
 
     def compute_metrics(self, results):
-        """Compute the metrics from processed results.
+        """
+        Compute metrics for online evaluation, similar to ForAINetV2 compute_metrics.
 
         Args:
-            results (list): The processed results of each batch.
+            results (list): list of tuples (eval_ann, single_pred_results)
+                eval_ann: dict with 'pts_semantic_mask' and 'pts_instance_mask'
+                single_pred_results: dict with 'pts_semantic_mask' and 'pts_instance_mask'
 
         Returns:
-            Dict[str, float]: The computed metrics. The keys are the names of
-                the metrics, and the values are corresponding results.
+            metrics (dict): dictionary containing semantic mIoU, binary mIoU, instance PQ/SQ/RQ, F1, MUCov, MWCov
         """
         logger: MMLogger = MMLogger.get_current_instance()
 
-        # These are specific to ForAINetV2 evaluation script
-        NUM_CLASSES_BINARY = 3  # unclassified, non-tree, tree
-        NUM_CLASSES_SEM = 4 # 0:unclassified, 1:ground, 2:wood, 3:leaf
-        INS_CLASS_IDS = [2]  # Instance class is 'wood'/'leaf' which maps to binary 'tree' (2)
-        STUFF_CLASS_IDS = [1] # Stuff class is 'ground' which maps to binary 'non-tree' (1)
+        #initialization
+        NUM_CLASSES = 3  # @Treeins: classes unclassified, non-tree and tree
+        NUM_CLASSES_SEM = 4
+        # class index for instance segmenatation
+        ins_classcount = [2]  # @Treeins
+        # class index for stuff segmentation
+        stuff_classcount = [1]  # @Treeins
+        # class index for semantic segmenatation
+        sem_classcount = [1, 2, 3] # @Treeins
+        sem_classcount_have = []
+        stuff_classes = [1]
+        thing_classes = [2,3]
 
-        # Global accumulators
-        true_positive_classes_global = np.zeros(NUM_CLASSES_SEM)
+        true_positive_classes_global = np.zeros(NUM_CLASSES_SEM) # TP
         positive_classes_global = np.zeros(NUM_CLASSES_SEM)
-        gt_classes_global = np.zeros(NUM_CLASSES_SEM)
-        true_positive_classes_bi_global = np.zeros(NUM_CLASSES_BINARY)
-        positive_classes_bi_global = np.zeros(NUM_CLASSES_BINARY)
-        gt_classes_bi_global = np.zeros(NUM_CLASSES_BINARY)
-        total_gt_ins_global = np.zeros(NUM_CLASSES_BINARY)
-        tpsins_global = [[] for _ in range(NUM_CLASSES_BINARY)]
-        fpsins_global = [[] for _ in range(NUM_CLASSES_BINARY)]
-        IoU_Tp_global = np.zeros(NUM_CLASSES_BINARY)
-        all_mean_cov_global = [[] for _ in range(NUM_CLASSES_BINARY)]
-        all_mean_weighted_cov_global = [[] for _ in range(NUM_CLASSES_BINARY)]
+        gt_classes_global = np.zeros(NUM_CLASSES_SEM) # global GT
 
-        for eval_ann, single_pred_results in results:
-            # Get GT and Pred labels, and shift them by 1 (0 is ignored)
-            sem_gt_i = eval_ann['pts_semantic_mask'] + 1
-            sem_pre_i = single_pred_results['pts_semantic_mask'][1] + 1
-            ins_gt_i = eval_ann['pts_instance_mask']
-            ins_pre_i = single_pred_results['pts_instance_mask'][1]
+        total_gt_ins_global = np.zeros(NUM_CLASSES) # total GT instances
+        tpsins_global = [[] for _ in range(NUM_CLASSES)] # TP instances
+        fpsins_global = [[] for _ in range(NUM_CLASSES)] # FP instances
+        IoU_Tp_global = np.zeros(NUM_CLASSES) # TP IoU
+        IoU_Mc_global = np.zeros(NUM_CLASSES) # MC IoU ???
 
-            # Semantic Segmentation Evaluation
-            for j in range(sem_gt_i.shape[0]):
-                gt_l, pred_l = int(sem_gt_i[j]), int(sem_pre_i[j])
-                gt_classes_global[gt_l] += 1
-                positive_classes_global[pred_l] += 1
-                true_positive_classes_global[gt_l] += int(gt_l == pred_l)
+        all_mean_cov_global = [[] for _ in range(NUM_CLASSES)]
+        all_mean_weighted_cov_global = [[] for _ in range(NUM_CLASSES)]
 
-            # Binary Semantic and Instance Evaluation
-            # Map semantic labels to binary: 1 for stuff (ground), 2 for thing (wood, leaf)
-            sem_gt_bi = np.copy(sem_gt_i)
-            sem_pre_bi = np.copy(sem_pre_i)
-            for sc in self.stuff_class_inds: sem_gt_bi[sem_gt_i == sc + 1] = 1
-            for sc in self.stuff_class_inds: sem_pre_bi[sem_pre_i == sc + 1] = 1
-            for tc in self.thing_class_inds: sem_gt_bi[sem_gt_i == tc + 1] = 2
-            for tc in self.thing_class_inds: sem_pre_bi[sem_pre_i == tc + 1] = 2
+        for idx, eval_data in enumerate(tqdm(results, desc="Evaluating...")):
+            eval_ann = eval_data[0]
+            single_pred_results = eval_data[1]
+            # 处理单个场景的点云数据
+            true_positive_classes = np.zeros(NUM_CLASSES_SEM)
+            positive_classes = np.zeros(NUM_CLASSES_SEM)
+            gt_classes = np.zeros(NUM_CLASSES_SEM)
 
-            for j in range(sem_gt_bi.shape[0]):
-                gt_l, pred_l = int(sem_gt_bi[j]), int(sem_pre_bi[j])
-                gt_classes_bi_global[gt_l] += 1
-                positive_classes_bi_global[pred_l] += 1
-                true_positive_classes_bi_global[gt_l] += int(gt_l == pred_l)
+            total_gt_ins = np.zeros(NUM_CLASSES)
+            tpsins = [[] for _ in range(NUM_CLASSES)]
+            fpsins = [[] for _ in range(NUM_CLASSES)]
+            IoU_Tp = np.zeros(NUM_CLASSES)
+            IoU_Mc = np.zeros(NUM_CLASSES)
 
-            # Filter out points that are ground in both pred and gt for instance evaluation
-            idxc = (sem_gt_bi != 1) | (sem_pre_bi != 1)
-            pred_ins, gt_ins = ins_pre_i[idxc], ins_gt_i[idxc]
-            pred_sem, gt_sem = sem_pre_bi[idxc], sem_gt_bi[idxc]
+            all_mean_cov = [[] for _ in range(NUM_CLASSES)]
+            all_mean_weighted_cov = [[] for _ in range(NUM_CLASSES)]
 
-            # Get predicted instances
-            un = np.unique(pred_ins)
-            pts_in_pred = [[] for _ in range(NUM_CLASSES_BINARY)]
-            for g in un:
-                if g == -1: continue
+            sem_pre_i = single_pred_results['pts_semantic_mask'] + 1 # change to [1, 2, 3]
+            sem_gt_i = eval_ann['pts_semantic_mask'] + 1 # 真值label
+
+            ins_pre_i_ori = single_pred_results['pts_instance_mask']
+            ins_gt_i_ori = eval_ann['pts_instance_mask']
+
+            pred_sem_complete = sem_pre_i
+            gt_sem_complete = sem_gt_i
+            pred_ins_complete = ins_pre_i_ori
+            gt_ins_complete = ins_gt_i_ori
+
+            idxc = ((gt_sem_complete != 0) & (gt_sem_complete != 1)) | ((pred_sem_complete != 0) & (pred_sem_complete != 1)) 
+            pred_ins = pred_ins_complete[idxc] # 索引点有效点
+            gt_ins = gt_ins_complete[idxc]
+            pred_sem = pred_sem_complete[idxc]
+            gt_sem = gt_sem_complete[idxc]
+            # 对原始未进行筛选的pred_sem_complete进行统计
+            for j in range(gt_sem_complete.shape[0]): # eval gt_sem 
+                gt_l = int(gt_sem_complete[j])
+                pred_l = int(pred_sem_complete[j])
+                gt_classes[gt_l] += 1
+                positive_classes[pred_l] += 1
+                true_positive_classes[gt_l] += int(gt_l == pred_l) # TP
+
+            predicted_labels_copy = pred_sem_complete.copy()
+            for i in stuff_classes:
+                pred_sem_complete[predicted_labels_copy == i] = 1
+            for i in thing_classes:
+                pred_sem_complete[predicted_labels_copy == i] = 2
+
+            gt_labels_copy = gt_sem_complete.copy()
+            for i in stuff_classes:
+                gt_sem_complete[gt_labels_copy == i] = 1
+            for i in thing_classes:
+                gt_sem_complete[gt_labels_copy == i] = 2
+            # 统计地面和树两个类别的结果
+            true_positive_classes_bi = np.zeros(NUM_CLASSES)
+            positive_classes_bi = np.zeros(NUM_CLASSES)
+            gt_classes_bi = np.zeros(NUM_CLASSES)
+            for j in range(gt_sem_complete.shape[0]):
+                gt_l = int(gt_sem_complete[j])
+                pred_l = int(pred_sem_complete[j])
+                gt_classes_bi[gt_l] += 1 # gt_classes_bi统计二分类中各个类别的gt数量
+                positive_classes_bi[pred_l] += 1 # 统计网络预测的各个类别正样本数量
+                true_positive_classes_bi[gt_l] += int(gt_l == pred_l) # 统计TP数量
+            # 对经过筛选的pred_sem进行统计，仅评估ground和tree两个类别
+            predicted_labels_copy = pred_sem.copy()
+            for i in stuff_classes:
+                pred_sem[predicted_labels_copy == i] = 1 # ground
+            for i in thing_classes:
+                pred_sem[predicted_labels_copy == i] = 2 # 合并wood和leave为tree
+
+            gt_labels_copy = gt_sem.copy()
+            for i in stuff_classes:
+                gt_sem[gt_labels_copy == i] = 1
+            for i in thing_classes:
+                gt_sem[gt_labels_copy == i] = 2
+
+            un = np.unique(pred_ins) # 
+            pts_in_pred = [[] for _ in range(NUM_CLASSES)]
+            for g in un: # 对预测的每个实例进行统计
+                if g == -1:
+                    continue
                 tmp = (pred_ins == g)
-                sem_seg_i = int(stats.mode(pred_sem[tmp], keepdims=True)[0][0])
-                pts_in_pred[sem_seg_i].append(tmp)
+                sem_seg_i = int(stats.mode(pred_sem[tmp])[0]) # 统计tmp中出现最多的语义标签作为实例的类别标签
+                pts_in_pred[sem_seg_i] += [tmp] # 分组存储各个类别的实例点
 
-            # Get ground truth instances
             un = np.unique(gt_ins)
-            pts_in_gt = [[] for _ in range(NUM_CLASSES_BINARY)]
-            for g in un:
-                if g == 0: continue # In ForAINetV2, instance ID 0 is not a valid instance
+            pts_in_gt = [[] for _ in range(NUM_CLASSES)]
+            for g in un: # 统计实例的ground truth
+                if g == -1:
+                    continue
                 tmp = (gt_ins == g)
-                sem_seg_i = int(stats.mode(gt_sem[tmp], keepdims=True)[0][0])
-                pts_in_gt[sem_seg_i].append(tmp)
-
-            # Coverage Metrics (MUCov, MWCov)
-            for i_sem in INS_CLASS_IDS:
-                if not pts_in_gt[i_sem] or not pts_in_pred[i_sem]: continue
-                sum_cov, num_gt_point, mean_weighted_cov = 0, 0, 0
-                for ins_gt in pts_in_gt[i_sem]:
+                sem_seg_i = int(stats.mode(gt_sem[tmp])[0])
+                pts_in_gt[sem_seg_i] += [tmp]
+            # 统计实例覆盖率cov
+            for i_sem in range(NUM_CLASSES):
+                sum_cov = 0
+                mean_cov = 0
+                mean_weighted_cov = 0
+                num_gt_point = 0
+                if not pts_in_gt[i_sem] or not pts_in_pred[i_sem]:
+                    all_mean_cov[i_sem].append(0)
+                    all_mean_weighted_cov[i_sem].append(0)
+                    continue # 若对应类别的实例为空，则cov指标直接为0
+                for ins_gt in pts_in_gt[i_sem]: # 统计gt和pred实例之间的iou
                     ovmax = 0.
-                    num_ins_gt_point = np.sum(ins_gt)
+                    num_ins_gt_point = np.sum(ins_gt) # 统计实例gt的点数量
                     num_gt_point += num_ins_gt_point
                     for ins_pred in pts_in_pred[i_sem]:
                         union = (ins_pred | ins_gt)
                         intersect = (ins_pred & ins_gt)
                         iou = float(np.sum(intersect)) / np.sum(union)
-                        if iou > ovmax: ovmax = iou
+
+                        if iou > ovmax:
+                            ovmax = iou # 统计与gt预测实例之间最大的iou
+
                     sum_cov += ovmax
-                    mean_weighted_cov += ovmax * num_ins_gt_point
-                if len(pts_in_gt[i_sem]) != 0:
-                    all_mean_cov_global[i_sem].append(sum_cov / len(pts_in_gt[i_sem]))
-                    all_mean_weighted_cov_global[i_sem].append(mean_weighted_cov / num_gt_point)
+                    mean_weighted_cov += ovmax * num_ins_gt_point # 根据gt点数量进行加权
 
-            # PQ, SQ, RQ Metrics
-            for i_sem in INS_CLASS_IDS:
-                tp, fp = [0.] * len(pts_in_pred[i_sem]), [0.] * len(pts_in_pred[i_sem])
+                if len(pts_in_gt[i_sem]) != 0: # 若对应类别的gt的实例不为空
+                    mean_cov = sum_cov / len(pts_in_gt[i_sem])
+                    all_mean_cov[i_sem].append(mean_cov)
+
+                    mean_weighted_cov /= num_gt_point
+                    all_mean_weighted_cov[i_sem].append(mean_weighted_cov)
+
+            for i_sem in range(NUM_CLASSES): # 统计各个类别的实例
+                if not pts_in_pred[i_sem]:
+                    continue
                 IoU_Tp_per = 0
-                if pts_in_gt[i_sem]: total_gt_ins_global[i_sem] += len(pts_in_gt[i_sem])
-
+                IoU_Mc_per = 0
+                tp = [0.] * len(pts_in_pred[i_sem])
+                fp = [0.] * len(pts_in_pred[i_sem])
+                if pts_in_gt[i_sem]:
+                    total_gt_ins[i_sem] += len(pts_in_gt[i_sem]) # 统计真值实例点的总数
                 for ip, ins_pred in enumerate(pts_in_pred[i_sem]):
                     ovmax = -1.
-                    if not pts_in_gt[i_sem]:
-                        fp[ip] = 1; continue
-                    for ig, ins_gt in enumerate(pts_in_gt[i_sem]):
+                    if not pts_in_gt[i_sem]: # gt为空，pred不为空，则为fp
+                        fp[ip] = 1
+                        continue
+                    for ins_gt in pts_in_gt[i_sem]:
                         union = (ins_pred | ins_gt)
                         intersect = (ins_pred & ins_gt)
                         iou = float(np.sum(intersect)) / np.sum(union)
-                        if iou > ovmax: ovmax = iou
-                    if ovmax >= 0.5:
-                        tp[ip] = 1
+
+                        if iou > ovmax:
+                            ovmax = iou
+
+                    if ovmax > 0:
+                        IoU_Mc_per += ovmax
+                    if ovmax >= 0.5: # iou大于0.5才被认为是tp
+                        tp[ip] = 1  # true
                         IoU_Tp_per += ovmax
                     else:
-                        fp[ip] = 1
-                tpsins_global[i_sem].extend(tp)
-                fpsins_global[i_sem].extend(fp)
-                IoU_Tp_global[i_sem] += IoU_Tp_per
+                        fp[ip] = 1  # false positive
 
-        # Final Metric Calculation
+                tpsins[i_sem] += tp
+                fpsins[i_sem] += fp
+                IoU_Tp[i_sem] += IoU_Tp_per
+                IoU_Mc[i_sem] += IoU_Mc_per
+
+            # semantic results
+            iou_list = []
+            sem_classcount_have = []
+            for i in range(NUM_CLASSES_SEM):
+                if gt_classes[i] > 0:
+                    sem_classcount_have.append(i)
+                    iou = true_positive_classes[i] / float(gt_classes[i] + positive_classes[i] - true_positive_classes[i])
+                else:
+                    iou = 0.0
+                iou_list.append(iou)
+
+            iou_list_bi = []
+            sem_classcount_have_bi = []
+            for i in range(NUM_CLASSES):
+                if gt_classes_bi[i] > 0:
+                    sem_classcount_have_bi.append(i)
+                    iou = true_positive_classes_bi[i] / float(gt_classes_bi[i] + positive_classes_bi[i] - true_positive_classes_bi[i])
+                else:
+                    iou = 0.0
+                iou_list_bi.append(iou)
+
+            MUCov = np.zeros(NUM_CLASSES)
+            MWCov = np.zeros(NUM_CLASSES)
+            for i_sem in range(NUM_CLASSES):
+                MUCov[i_sem] = np.mean(all_mean_cov[i_sem])
+                MWCov[i_sem] = np.mean(all_mean_weighted_cov[i_sem])
+
+            precision = np.zeros(NUM_CLASSES)
+            recall = np.zeros(NUM_CLASSES)
+            RQ = np.zeros(NUM_CLASSES)
+            SQ = np.zeros(NUM_CLASSES)
+            PQ = np.zeros(NUM_CLASSES)
+            PQStar = np.zeros(NUM_CLASSES)
+
+            for i_sem in ins_classcount:
+                if not tpsins[i_sem] or not fpsins[i_sem]:
+                    continue
+                tp = np.asarray(tpsins[i_sem]).astype(float)
+                fp = np.asarray(fpsins[i_sem]).astype(float)
+                tp = np.sum(tp)
+                fp = np.sum(fp)
+                if total_gt_ins[i_sem] == 0:
+                    rec = 0
+                else:
+                    rec = tp / total_gt_ins[i_sem] # recall
+                if (tp + fp) == 0:
+                    prec = 0
+                else:
+                    prec = tp / (tp + fp) # 精度
+                precision[i_sem] = prec
+                recall[i_sem] = rec
+                if (prec + rec) == 0:
+                    RQ[i_sem] = 0
+                else:
+                    RQ[i_sem] = 2 * prec * rec / (prec + rec) # RQ衡量分的准不准
+                if tp == 0:
+                    SQ[i_sem] = 0
+                else:
+                    SQ[i_sem] = IoU_Tp[i_sem] / tp # SQ衡量分的细不细
+                PQ[i_sem] = SQ[i_sem] * RQ[i_sem] # PQ衡量全景分割质量
+                PQStar[i_sem] = PQ[i_sem]
+
+            for i_sem in stuff_classcount:
+                if iou_list_bi[i_sem] >= 0.5:
+                    RQ[i_sem] = 1
+                    SQ[i_sem] = iou_list_bi[i_sem]
+                else:
+                    RQ[i_sem] = 0
+                    SQ[i_sem] = 0
+                PQ[i_sem] = SQ[i_sem] * RQ[i_sem]
+                PQStar[i_sem] = iou_list_bi[i_sem]
+
+            true_positive_classes_global += true_positive_classes
+            positive_classes_global += positive_classes
+            gt_classes_global += gt_classes
+
+            total_gt_ins_global += total_gt_ins
+            for i in range(NUM_CLASSES):
+                tpsins_global[i] += tpsins[i]
+                fpsins_global[i] += fpsins[i]
+                IoU_Tp_global[i] += IoU_Tp[i]
+                IoU_Mc_global[i] += IoU_Mc[i]
+
+            for i in range(NUM_CLASSES):
+                all_mean_cov_global[i] += all_mean_cov[i]
+                all_mean_weighted_cov_global[i] += all_mean_weighted_cov[i]
+        
         metrics = dict()
 
-        # Semantic Segmentation
-        iou_list = []
-        valid_sem_classes = [i for i, n in enumerate(gt_classes_global) if n > 0 and i > 0] # Exclude unclassified
-        for i in range(1, NUM_CLASSES_SEM):
-            iou = true_positive_classes_global[i] / float(gt_classes_global[i] + positive_classes_global[i] - true_positive_classes_global[i] + 1e-8)
-            iou_list.append(iou)
-        metrics['mIoU'] = np.mean([iou_list[i-1] for i in valid_sem_classes]) if valid_sem_classes else 0.0
+        # 统计所有场景的语义分割结果
+        iou_list_global = []
+        sem_classcount_have_global = []
+        for i in range(NUM_CLASSES_SEM):
+            if gt_classes_global[i] > 0:
+                sem_classcount_have_global.append(i)
+                iou_global = true_positive_classes_global[i] / float(gt_classes_global[i] + positive_classes_global[i] - true_positive_classes_global[i])
+            else:
+                iou_global = 0.0
+            iou_list_global.append(iou_global)
 
-        # Binary Semantic Segmentation
-        iou_list_bi = []
-        valid_bi_sem_classes = [i for i, n in enumerate(gt_classes_bi_global) if n > 0 and i > 0]
-        for i in range(1, NUM_CLASSES_BINARY):
-            iou = true_positive_classes_bi_global[i] / float(gt_classes_bi_global[i] + positive_classes_bi_global[i] - true_positive_classes_bi_global[i] + 1e-8)
-            iou_list_bi.append(iou)
-        metrics['mIoU_binary'] = np.mean([iou_list_bi[i-1] for i in valid_bi_sem_classes]) if valid_bi_sem_classes else 0.0
+        set1_global = set(sem_classcount)
+        set2_global = set(sem_classcount_have_global)
+        set3_global = set1_global & set2_global
+        sem_classcount_final_global = list(set3_global)
 
-        # Instance Segmentation
-        MUCov = np.zeros(NUM_CLASSES_BINARY)
-        MWCov = np.zeros(NUM_CLASSES_BINARY)
-        precision = np.zeros(NUM_CLASSES_BINARY)
-        recall = np.zeros(NUM_CLASSES_BINARY)
-        RQ = np.zeros(NUM_CLASSES_BINARY)
-        SQ = np.zeros(NUM_CLASSES_BINARY)
-        PQ = np.zeros(NUM_CLASSES_BINARY)
-        for i_sem in INS_CLASS_IDS:
-            MUCov[i_sem] = np.mean(all_mean_cov_global[i_sem]) if all_mean_cov_global[i_sem] else 0
-            MWCov[i_sem] = np.mean(all_mean_weighted_cov_global[i_sem]) if all_mean_weighted_cov_global[i_sem] else 0
-            tp = np.sum(tpsins_global[i_sem])
-            fp = np.sum(fpsins_global[i_sem])
-            rec = tp / (total_gt_ins_global[i_sem] + 1e-8)
-            prec = tp / (tp + fp + 1e-8)
-            precision[i_sem], recall[i_sem] = prec, rec
-            RQ[i_sem] = 2 * prec * rec / (prec + rec + 1e-8)
-            SQ[i_sem] = IoU_Tp_global[i_sem] / (tp + 1e-8)
-            PQ[i_sem] = SQ[i_sem] * RQ[i_sem]
-        valid_ins_classes = [i for i in INS_CLASS_IDS if total_gt_ins_global[i] > 0]
-        if not valid_ins_classes: valid_ins_classes = INS_CLASS_IDS # Avoid division by zero if no GT
+        metrics['mIoU'] = 1. * sum(iou_list_global) / len(sem_classcount_final_global)
 
-        metrics['mMWCov'] = np.mean(MWCov[valid_ins_classes])
-        metrics['mMUCov'] = np.mean(MUCov[valid_ins_classes])
-        metrics['mPrecision'] = np.mean(precision[valid_ins_classes])
-        metrics['mRecall'] = np.mean(recall[valid_ins_classes])
-        metrics['F1'] = (2 * metrics['mPrecision'] * metrics['mRecall']) / (metrics['mPrecision'] + metrics['mRecall'] + 1e-8)
-        metrics['mPQ'] = np.mean(PQ[valid_ins_classes])
-        metrics['mSQ'] = np.mean(SQ[valid_ins_classes])
-        metrics['mRQ'] = np.mean(RQ[valid_ins_classes])
+        iou_list_bi_global = []
+        sem_classcount_have_bi_global = []
+        for i in range(NUM_CLASSES):
+            if gt_classes_bi[i] > 0:
+                sem_classcount_have_bi_global.append(i)
+                iou_bi_global = true_positive_classes_bi[i] / float(gt_classes_bi[i] + positive_classes_bi[i] - true_positive_classes_bi[i])
+            else:
+                iou_bi_global = 0.0
+            iou_list_bi_global.append(iou_bi_global)
 
+        sem_classcount_bi_global = [1, 2]
+        set1_bi_global = set(sem_classcount_bi_global)
+        set2_bi_global = set(sem_classcount_have_bi_global)
+        set3_bi_global = set1_bi_global & set2_bi_global
+        sem_classcount_final_bi_global = list(set3_bi_global)
+        
+        # 统计合并类别后，所有场景下的总二分类的指标
+        metrics['mIoU_binary'] = 1. * sum(iou_list_bi_global) / len(sem_classcount_final_bi_global)
+   
+        # 统计全景分割相关指标
+        MUCov_global = np.zeros(NUM_CLASSES)
+        MWCov_global = np.zeros(NUM_CLASSES)
+        for i_sem in range(NUM_CLASSES):
+            MUCov_global[i_sem] = np.mean(all_mean_cov_global[i_sem])
+            MWCov_global[i_sem] = np.mean(all_mean_weighted_cov_global[i_sem])
+
+        precision_global = np.zeros(NUM_CLASSES)
+        recall_global = np.zeros(NUM_CLASSES)
+        RQ_global = np.zeros(NUM_CLASSES)
+        SQ_global = np.zeros(NUM_CLASSES)
+        PQ_global = np.zeros(NUM_CLASSES)
+        PQStar_global = np.zeros(NUM_CLASSES)
+        set1_ins_global = set(ins_classcount)
+        set2_ins_global = set(sem_classcount_have_global)
+        set3_ins_global = set1_ins_global & set2_ins_global
+        ins_classcount_final_global = list(set3_ins_global)
+
+        for i_sem in ins_classcount:
+            if not tpsins_global[i_sem] or not fpsins_global[i_sem]:
+                continue
+            tp_global = np.asarray(tpsins_global[i_sem]).astype(float)
+            fp_global = np.asarray(fpsins_global[i_sem]).astype(float)
+            tp_global = np.sum(tp_global)
+            fp_global = np.sum(fp_global)
+            if total_gt_ins_global[i_sem] == 0:
+                rec_global = 0
+            else:
+                rec_global = tp_global / total_gt_ins_global[i_sem]
+            if (tp_global + fp_global) == 0:
+                prec_global = 0
+            else:
+                prec_global = tp_global / (tp_global + fp_global)
+            precision_global[i_sem] = prec_global
+            recall_global[i_sem] = rec_global
+            if (prec_global + rec_global) == 0:
+                RQ_global[i_sem] = 0
+            else:
+                RQ_global[i_sem] = 2 * prec_global * rec_global / (prec_global + rec_global)
+            if tp_global == 0:
+                SQ_global[i_sem] = 0
+            else:
+                SQ_global[i_sem] = IoU_Tp_global[i_sem] / tp_global
+            PQ_global[i_sem] = SQ_global[i_sem] * RQ_global[i_sem]
+            PQStar_global[i_sem] = PQ_global[i_sem]
+
+        for i_sem in stuff_classcount:
+            if iou_list_bi_global[i_sem] >= 0.5:
+                RQ_global[i_sem] = 1
+                SQ_global[i_sem] = iou_list_bi_global[i_sem]
+            else:
+                RQ_global[i_sem] = 0
+                SQ_global[i_sem] = 0
+            PQ_global[i_sem] = SQ_global[i_sem] * RQ_global[i_sem]
+            PQStar_global[i_sem] = iou_list_bi_global[i_sem]
+
+        if np.mean(precision_global[ins_classcount_final_global]) + np.mean(recall_global[ins_classcount_final_global]) == 0:
+            F1_score_global = 0.0
+        else:
+            F1_score_global = (2 * np.mean(precision_global[ins_classcount_final_global]) * np.mean(recall_global[ins_classcount_final_global])) / (
+                        np.mean(precision_global[ins_classcount_final_global]) + np.mean(recall_global[ins_classcount_final_global]))
+
+        metrics['mMWCov'] = np.mean(MWCov_global[ins_classcount_final_global])
+        metrics['mMUCov'] = np.mean(MUCov_global[ins_classcount_final_global])
+        metrics['mPrecision'] = np.mean(precision_global[ins_classcount_final_global])
+        metrics['mRecall'] = np.mean(recall_global[ins_classcount_final_global])
+        metrics['F1'] = F1_score_global
+        metrics['mSQ'] = np.mean(SQ_global[sem_classcount_final_bi_global])
+        metrics['mRQ'] = np.mean(RQ_global[sem_classcount_final_bi_global])
+        metrics['mPQ'] = np.mean(PQ_global[sem_classcount_final_bi_global])
+        
         log_str = 'Evaluation Results:\n'
         log_str += f"mIoU: {metrics['mIoU']:.4f}, mIoU_binary: {metrics['mIoU_binary']:.4f}\n"
         log_str += f"mPQ: {metrics['mPQ']:.4f}, mSQ: {metrics['mSQ']:.4f}, mRQ: {metrics['mRQ']:.4f}\n"
         log_str += f"mPrecision: {metrics['mPrecision']:.4f}, mRecall: {metrics['mRecall']:.4f}, F1: {metrics['F1']:.4f}\n"
         log_str += f"mMUCov: {metrics['mMUCov']:.4f}, mMWCov: {metrics['mMWCov']:.4f}"
         logger.info(log_str)
-        
+
         return metrics
-
-
+        
 @METRICS.register_module()
 class InstanceSegMetric_(InstanceSegMetric):
     """The only difference with InstanceSegMetric is that following ScanNet

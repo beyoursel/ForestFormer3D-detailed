@@ -1,3 +1,7 @@
+import sys
+import os
+sys.path.insert(0, os.path.abspath(os.path.join(__file__, '..', '..')))
+
 # This is an exact copy of tools/test.py from open-mmlab/mmdetection3d.
 import argparse
 import os
@@ -8,6 +12,7 @@ from mmengine.registry import RUNNERS
 from mmengine.runner import Runner
 
 from mmdet3d.utils import replace_ceph_backend
+import torch
 
 
 # TODO: support fuse_conv_bn and format_only

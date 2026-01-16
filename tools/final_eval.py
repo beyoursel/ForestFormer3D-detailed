@@ -11,7 +11,7 @@ import os
 if __name__ == '__main__':
     import sys
     # test_sem_path = sys.argv[1]
-    test_sem_path = "/media/mydisk/download_data/oneformer3d_qs_radius8_qp300_2many_epoch3000_testset"
+    test_sem_path = "/media/taole/mydisk/DL_PROJECT/ForestFormer3D-detailed/work_dirs/debug_test"
     #initialization
     NUM_CLASSES = 3  # @Treeins: classes unclassified, non-tree and tree # 0， 1， 2分别为未分类的、非树的、树的
     NUM_CLASSES_sem = 4
@@ -114,7 +114,7 @@ if __name__ == '__main__':
         gt_ins = gt_ins_complete[idxc]
         pred_sem = pred_sem_complete[idxc]
         gt_sem = gt_sem_complete[idxc]
-        # 统计语义分割结果
+        # 对原始未进行筛选的pred_sem_complete进行统计
         for j in range(gt_sem_complete.shape[0]): # eval gt_sem 
             gt_l = int(gt_sem_complete[j])
             pred_l = int(pred_sem_complete[j])
@@ -133,22 +133,22 @@ if __name__ == '__main__':
             gt_sem_complete[gt_labels_copy == i] = 1
         for i in thing_classes:
             gt_sem_complete[gt_labels_copy == i] = 2
-
+        # 统计地面和树两个类别的结果
         true_positive_classes_bi = np.zeros(NUM_CLASSES)
         positive_classes_bi = np.zeros(NUM_CLASSES)
         gt_classes_bi = np.zeros(NUM_CLASSES)
         for j in range(gt_sem_complete.shape[0]):
             gt_l = int(gt_sem_complete[j])
             pred_l = int(pred_sem_complete[j])
-            gt_classes_bi[gt_l] += 1
-            positive_classes_bi[pred_l] += 1
-            true_positive_classes_bi[gt_l] += int(gt_l == pred_l)
-
+            gt_classes_bi[gt_l] += 1 # gt_classes_bi统计二分类中各个类别的gt数量
+            positive_classes_bi[pred_l] += 1 # 统计网络预测的各个类别正样本数量
+            true_positive_classes_bi[gt_l] += int(gt_l == pred_l) # 统计TP数量
+        # 对经过筛选的pred_sem进行统计，仅评估ground和tree两个类别
         predicted_labels_copy = pred_sem.copy()
         for i in stuff_classes:
-            pred_sem[predicted_labels_copy == i] = 1
+            pred_sem[predicted_labels_copy == i] = 1 # ground
         for i in thing_classes:
-            pred_sem[predicted_labels_copy == i] = 2
+            pred_sem[predicted_labels_copy == i] = 2 # 合并wood和leave为tree
 
         gt_labels_copy = gt_sem.copy()
         for i in stuff_classes:
@@ -156,24 +156,24 @@ if __name__ == '__main__':
         for i in thing_classes:
             gt_sem[gt_labels_copy == i] = 2
 
-        un = np.unique(pred_ins)
+        un = np.unique(pred_ins) # 
         pts_in_pred = [[] for _ in range(NUM_CLASSES)]
-        for g in un:
+        for g in un: # 对预测的每个实例进行统计
             if g == -1:
                 continue
             tmp = (pred_ins == g)
-            sem_seg_i = int(stats.mode(pred_sem[tmp])[0])
-            pts_in_pred[sem_seg_i] += [tmp]
+            sem_seg_i = int(stats.mode(pred_sem[tmp])[0]) # 统计tmp中出现最多的语义标签作为实例的类别标签
+            pts_in_pred[sem_seg_i] += [tmp] # 分组存储各个类别的实例点
 
         un = np.unique(gt_ins)
         pts_in_gt = [[] for _ in range(NUM_CLASSES)]
-        for g in un:
+        for g in un: # 统计实例的ground truth
             if g == -1:
                 continue
             tmp = (gt_ins == g)
             sem_seg_i = int(stats.mode(gt_sem[tmp])[0])
             pts_in_gt[sem_seg_i] += [tmp]
-
+        # 统计实例覆盖率cov
         for i_sem in range(NUM_CLASSES):
             sum_cov = 0
             mean_cov = 0
@@ -182,10 +182,10 @@ if __name__ == '__main__':
             if not pts_in_gt[i_sem] or not pts_in_pred[i_sem]:
                 all_mean_cov[i_sem].append(0)
                 all_mean_weighted_cov[i_sem].append(0)
-                continue
-            for ins_gt in pts_in_gt[i_sem]:
+                continue # 若对应类别的实例为空，则cov指标直接为0
+            for ins_gt in pts_in_gt[i_sem]: # 统计gt和pred实例之间的iou
                 ovmax = 0.
-                num_ins_gt_point = np.sum(ins_gt)
+                num_ins_gt_point = np.sum(ins_gt) # 统计实例gt的点数量
                 num_gt_point += num_ins_gt_point
                 for ins_pred in pts_in_pred[i_sem]:
                     union = (ins_pred | ins_gt)
@@ -193,19 +193,19 @@ if __name__ == '__main__':
                     iou = float(np.sum(intersect)) / np.sum(union)
 
                     if iou > ovmax:
-                        ovmax = iou
+                        ovmax = iou # 统计与gt预测实例之间最大的iou
 
                 sum_cov += ovmax
-                mean_weighted_cov += ovmax * num_ins_gt_point
+                mean_weighted_cov += ovmax * num_ins_gt_point # 根据gt点数量进行加权
 
-            if len(pts_in_gt[i_sem]) != 0:
+            if len(pts_in_gt[i_sem]) != 0: # 若对应类别的gt的实例不为空
                 mean_cov = sum_cov / len(pts_in_gt[i_sem])
                 all_mean_cov[i_sem].append(mean_cov)
 
                 mean_weighted_cov /= num_gt_point
                 all_mean_weighted_cov[i_sem].append(mean_weighted_cov)
 
-        for i_sem in range(NUM_CLASSES):
+        for i_sem in range(NUM_CLASSES): # 统计各个类别的实例
             if not pts_in_pred[i_sem]:
                 continue
             IoU_Tp_per = 0
@@ -213,10 +213,10 @@ if __name__ == '__main__':
             tp = [0.] * len(pts_in_pred[i_sem])
             fp = [0.] * len(pts_in_pred[i_sem])
             if pts_in_gt[i_sem]:
-                total_gt_ins[i_sem] += len(pts_in_gt[i_sem])
+                total_gt_ins[i_sem] += len(pts_in_gt[i_sem]) # 统计真值实例点的总数
             for ip, ins_pred in enumerate(pts_in_pred[i_sem]):
                 ovmax = -1.
-                if not pts_in_gt[i_sem]:
+                if not pts_in_gt[i_sem]: # gt为空，pred不为空，则为fp
                     fp[ip] = 1
                     continue
                 for ins_gt in pts_in_gt[i_sem]:
@@ -229,7 +229,7 @@ if __name__ == '__main__':
 
                 if ovmax > 0:
                     IoU_Mc_per += ovmax
-                if ovmax >= 0.5:
+                if ovmax >= 0.5: # iou大于0.5才被认为是tp
                     tp[ip] = 1  # true
                     IoU_Tp_per += ovmax
                 else:
@@ -255,9 +255,9 @@ if __name__ == '__main__':
                 iou_list.append(iou)
 
             set1 = set(sem_classcount)
-            set2 = set(sem_classcount_have)
+            set2 = set(sem_classcount_have) # 场景中实际存在的类别数量
             set3 = set1 & set2
-            sem_classcount_final = list(set3)
+            sem_classcount_final = list(set3) # 
 
             log_string('Semantic Segmentation oAcc: {}'.format(sum(true_positive_classes) / float(sum(positive_classes))), IND_LOG_FOUT)
             log_string('Semantic Segmentation mAcc: {}'.format(np.mean(true_positive_classes[sem_classcount_final] / gt_classes[sem_classcount_final])), IND_LOG_FOUT)
@@ -319,22 +319,22 @@ if __name__ == '__main__':
                 if total_gt_ins[i_sem] == 0:
                     rec = 0
                 else:
-                    rec = tp / total_gt_ins[i_sem]
+                    rec = tp / total_gt_ins[i_sem] # recall
                 if (tp + fp) == 0:
                     prec = 0
                 else:
-                    prec = tp / (tp + fp)
+                    prec = tp / (tp + fp) # 精度
                 precision[i_sem] = prec
                 recall[i_sem] = rec
                 if (prec + rec) == 0:
                     RQ[i_sem] = 0
                 else:
-                    RQ[i_sem] = 2 * prec * rec / (prec + rec)
+                    RQ[i_sem] = 2 * prec * rec / (prec + rec) # RQ衡量分的准不准
                 if tp == 0:
                     SQ[i_sem] = 0
                 else:
-                    SQ[i_sem] = IoU_Tp[i_sem] / tp
-                PQ[i_sem] = SQ[i_sem] * RQ[i_sem]
+                    SQ[i_sem] = IoU_Tp[i_sem] / tp # SQ衡量分的细不细
+                PQ[i_sem] = SQ[i_sem] * RQ[i_sem] # PQ衡量全景分割质量
                 PQStar[i_sem] = PQ[i_sem]
 
             for i_sem in stuff_classcount:
@@ -398,7 +398,7 @@ if __name__ == '__main__':
         for i in range(NUM_CLASSES):
             all_mean_cov_global[i] += all_mean_cov[i]
             all_mean_weighted_cov_global[i] += all_mean_weighted_cov[i]
-
+    # 统计所有场景的语义分割结果
     iou_list_global = []
     sem_classcount_have_global = []
     for i in range(NUM_CLASSES_sem):
@@ -440,13 +440,13 @@ if __name__ == '__main__':
     set2_stuff_global = set(sem_classcount_have_bi_global)
     set3_stuff_global = set1_stuff_global & set2_stuff_global
     stuff_classcount_final_global = list(set3_stuff_global)
-
+    # 统计合并类别后，所有场景下的总二分类的指标
     log_string('Binary Semantic Segmentation oAcc: {}'.format(sum(true_positive_classes_bi) / float(sum(positive_classes_bi))))
     log_string('Binary Semantic Segmentation mAcc: {}'.format(np.mean(true_positive_classes_bi[sem_classcount_final_bi_global] / gt_classes_bi[sem_classcount_final_bi_global])))
     log_string('Binary Semantic Segmentation IoU: {}'.format(iou_list_bi_global))
     log_string('Binary Semantic Segmentation mIoU: {}'.format(1. * sum(iou_list_bi_global) / len(sem_classcount_final_bi_global)))
     log_string('  ')
-
+    # 统计全景分割相关指标
     MUCov_global = np.zeros(NUM_CLASSES)
     MWCov_global = np.zeros(NUM_CLASSES)
     for i_sem in range(NUM_CLASSES):

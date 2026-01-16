@@ -7,9 +7,9 @@ custom_imports = dict(imports=['oneformer3d'])
 num_channels = 32
 num_instance_classes = 3
 num_semantic_classes = 3
-radius=16  #modify the radius of input cylinder
-score_th = 00.4
-chunk = 20_000
+radius = 8  #modify the radius of input cylinder
+score_th = 0.4
+chunk = 20000
 model = dict(
     type='ForAINetV2OneFormer3D_XAwarequery',
     data_preprocessor=dict(type='Det3DDataPreprocessor'),
@@ -21,11 +21,11 @@ model = dict(
     stuff_classes=[0],
     thing_cls=[1, 2],
     prepare_epoch=1000,   # -1, #700,
-    #prepare_epoch2=-1,#1000,
     query_point_num=300,   #modify the number of query points
     radius=radius,
     score_th = score_th,
     chunk = chunk,
+    save_ply_vis = False, # if save pred_ply or not
     backbone=dict(
         type='SpConvUNet',
         num_planes=[num_channels * (i + 1) for i in range(5)],
@@ -63,7 +63,7 @@ model = dict(
             fix_mean_loss=True)),
     train_cfg=dict(),
     test_cfg=dict(
-        topk_insts=300,
+        topk_insts=200,
         inst_score_thr=0.0,
         pan_score_thr=0.0,
         npoint_thr=10,
@@ -137,7 +137,7 @@ val_pipeline = [
         with_label_3d=False,
         with_mask_3d=True,
         with_seg_3d=True),
-    dict(type='CylinderCrop', radius=radius),
+    dict(type='CylinderCrop', radius=10),
     dict(type='GridSample', grid_size=0.2),
     dict(
         type='PointSample_',
@@ -163,9 +163,11 @@ test_pipeline = [
     dict(type='Pack3DDetInputs_', keys=['points', 'gt_labels_3d', 'pts_semantic_mask', 'pts_instance_mask','instance_mask'])
 ]
 
+# val_pipeline = test_pipeline
+
 # run settings
 train_dataloader = dict(
-    batch_size=2,
+    batch_size=1,
     num_workers=12,
     prefetch_factor=10,
     pin_memory=True,
@@ -202,6 +204,7 @@ test_dataloader = dict(
         box_type_3d='Depth',
         test_mode=True,
         backend_args=None))
+# test_dataloader = val_dataloader
 
 class_names = ['ground', 'wood', 'leaf']
 label2cat = {i: name for i, name in enumerate(class_names)}
@@ -238,9 +241,13 @@ default_hooks = dict(
         type='CheckpointHook',
         interval=1,
         max_keep_ckpts=3,
-        save_optimizer=True),
-        logger=dict(type='LoggerHook', interval=20),
-        visualization=dict(type='Det3DVisualizationHook', draw=False))
+        save_optimizer=True,
+        save_best = ['F1', 'mIoU'],
+        rule='greater'
+        ),
+    logger=dict(type='LoggerHook', interval=20),
+    visualization=dict(type='Det3DVisualizationHook', draw=False)
+)
 
 vis_backends = [dict(type='LocalVisBackend'),
                 dict(type='TensorboardVisBackend')]
@@ -252,8 +259,11 @@ visualizer = dict(
 train_cfg = dict(
     type='EpochBasedTrainLoop',
     max_epochs=3000,
-    val_interval=100)
+    val_interval=50)
 
 val_cfg = dict(type='ValLoop')
 test_cfg = dict(type='TestLoop')
+
 find_unused_parameters = True
+
+randomness = dict(seed=666)
