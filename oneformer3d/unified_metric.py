@@ -357,6 +357,7 @@ class UnifiedSegMetric(SegMetric):
         set3_global = set1_global & set2_global
         sem_classcount_final_global = list(set3_global)
 
+        metrics['iou_semantic'] = iou_list_global
         metrics['mIoU'] = 1. * sum(iou_list_global) / len(sem_classcount_final_global)
 
         iou_list_bi_global = []
@@ -450,7 +451,8 @@ class UnifiedSegMetric(SegMetric):
         metrics['mPQ'] = np.mean(PQ_global[sem_classcount_final_bi_global])
         
         log_str = 'Evaluation Results:\n'
-        log_str += f"mIoU: {metrics['mIoU']:.4f}, mIoU_binary: {metrics['mIoU_binary']:.4f}\n"
+        iou_semantic_str = ", ".join([f"{x:.4f}" for x in metrics['iou_semantic']])
+        log_str += f"IoU_semantic (all): [{iou_semantic_str}], mIoU: {metrics['mIoU']:.4f}, mIoU_binary: {metrics['mIoU_binary']:.4f}\n"
         log_str += f"mPQ: {metrics['mPQ']:.4f}, mSQ: {metrics['mSQ']:.4f}, mRQ: {metrics['mRQ']:.4f}\n"
         log_str += f"mPrecision: {metrics['mPrecision']:.4f}, mRecall: {metrics['mRecall']:.4f}, F1: {metrics['F1']:.4f}\n"
         log_str += f"mMUCov: {metrics['mMUCov']:.4f}, mMWCov: {metrics['mMWCov']:.4f}"
