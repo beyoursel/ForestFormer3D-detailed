@@ -476,7 +476,7 @@ class CylinderCrop(BaseTransform):
         points_tensor = input_dict["points"].tensor.numpy()
         
         # Select a random center point
-        center = points_tensor[np.random.randint(points_tensor.shape[0])]
+        center = points_tensor[np.random.randint(points_tensor.shape[0])] # 随机选取中心点
         
         # Calculate indices of points within the radius
         choices = np.where(
@@ -506,7 +506,7 @@ class CylinderCrop(BaseTransform):
                 mapping[idxs] = new_idxs - 1
             else:
                 mapping[idxs] = new_idxs
-            pts_instance_mask = mapping[pts_instance_mask]
+            pts_instance_mask = mapping[pts_instance_mask] # 根据crop后的实例个数重新按顺序分配id
             input_dict['pts_instance_mask'] = pts_instance_mask
 
             # Initialize vote_label without zero initialization
@@ -517,7 +517,7 @@ class CylinderCrop(BaseTransform):
             ratio_inspoint = {}
             for idx in idxs:
                 if idx != -1:  # Skip the background points
-                    original_count = np.sum(original_pts_instance_mask == idx)
+                    original_count = np.sum(original_pts_instance_mask == idx) # 统计原始实例mask中该实例的点云数量
                     new_count = np.sum(pts_instance_mask == mapping[idx])
                     ratio_inspoint[mapping[idx]] = new_count / original_count if original_count > 0 else 0
 
@@ -531,12 +531,12 @@ class CylinderCrop(BaseTransform):
                         
                         # Find the points in the cylinder that belong to this instance
                         cylinder_ind = np.where(pts_instance_mask == mapping[idx])[0]
-                        vote_label[cylinder_ind, :] = center - points_tensor[choices[cylinder_ind], :3]
+                        vote_label[cylinder_ind, :] = center - points_tensor[choices[cylinder_ind], :3] # 计算采样点到原始输入中对应实例中心的相对坐标
             
             
             input_dict['ratio_inspoint'] = ratio_inspoint
             input_dict['vote_label'] = torch.tensor(vote_label, dtype=torch.float32)
-            input_dict['instance_mask'] = torch.tensor(instance_mask, dtype=torch.bool)
+            input_dict['instance_mask'] = torch.tensor(instance_mask, dtype=torch.bool) # False为非-1， True为-1
 
         if pts_semantic_mask is not None:
             pts_semantic_mask = pts_semantic_mask[choices]
@@ -692,8 +692,8 @@ class GridSample(BaseTransform):
         grid_points = torch.floor(scaled_points).int()
         min_points = torch.min(grid_points, dim=0).values
         grid_points -= min_points
-        scaled_points -= min_points
-        min_points = min_points * self.grid_size
+        # scaled_points -= min_points
+        # min_points = min_points * self.grid_size
 
         key = self.hash(grid_points)
         idx_sort = torch.argsort(key)

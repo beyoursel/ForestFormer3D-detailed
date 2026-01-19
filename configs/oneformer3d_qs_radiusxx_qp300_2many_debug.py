@@ -260,7 +260,9 @@ visualizer = dict(
 train_cfg = dict(
     type='EpochBasedTrainLoop',
     max_epochs=30,
-    val_interval=5)
+    val_interval=10,
+    dynamic_intervals=[(20, 1)]
+)
 
 val_cfg = dict(type='ValLoop')
 test_cfg = dict(type='TestLoop')
