@@ -7,7 +7,7 @@ from mmdet3d.registry import DATASETS
 
 
 @DATASETS.register_module()
-class ForAINetV2SegDataset_(ScanNetDataset):
+class ForAINetV2SegDataset_(ScanNetDataset): # 继承ScanNet的数据解析接口
     """We just add super_pts_path."""
     METAINFO = {
         'classes':

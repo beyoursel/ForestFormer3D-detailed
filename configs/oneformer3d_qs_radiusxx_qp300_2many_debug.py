@@ -83,7 +83,7 @@ data_root_forainetv2 = '/media/taole/mydisk/DL_PROJECT/ForestFormer3D-detailed/d
 data_prefix = dict(
     pts='points',
     pts_instance_mask='instance_mask',
-    pts_semantic_mask='semantic_mask')
+    pts_semantic_mask='semantic_mask') # 实际数据集存放点云、实例mask和语义mask的文件夹名称
 
 train_pipeline = [
     dict(
@@ -169,7 +169,7 @@ test_pipeline = [
 # run settings
 train_dataloader = dict(
     batch_size=1,
-    num_workers=12,
+    num_workers=1,
     prefetch_factor=10,
     pin_memory=True,
     persistent_workers=True,
@@ -226,7 +226,7 @@ val_evaluator = dict(
     id_offset=2**16,
     sem_mapping=sem_mapping,
     inst_mapping=inst_mapping,
-    metric_meta=metric_meta)
+    metric_meta=metric_meta) # 采用自定义的UnifiedSegMetric评价指标
 test_evaluator = val_evaluator
 
 optim_wrapper = dict(

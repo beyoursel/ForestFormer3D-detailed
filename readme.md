@@ -109,8 +109,9 @@ pip install torch-cluster --no-cache-dir --no-deps
 pip show mmengine
 
 # Replace the following files with updated versions:
-cp replace_mmdetection_files/loops.py /opt/conda/lib/python3.10/site-packages/mmengine/runner/
-cp replace_mmdetection_files/base_model.py /opt/conda/lib/python3.10/site-packages/mmengine/model/base_model/
+# forestformer revise the mmengine to pass epoch param which hurts the DDP training
+#cp replace_mmdetection_files/loops.py /opt/conda/lib/python3.10/site-packages/mmengine/runner/
+#cp replace_mmdetection_files/base_model.py /opt/conda/lib/python3.10/site-packages/mmengine/model/base_model/
 cp replace_mmdetection_files/transforms_3d.py /opt/conda/lib/python3.10/site-packages/mmdet3d/datasets/transforms/
 ```
 

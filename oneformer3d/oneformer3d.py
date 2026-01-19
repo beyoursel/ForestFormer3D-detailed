@@ -1967,9 +1967,13 @@ class ForAINetV2OneFormer3D_XAwarequery(Base3DDetector):
         queries = []
         queries_inslabel = []
         queries_idx = []
+        
+        from mmengine.logging import MessageHub
 
+        hub = MessageHub.get_current_instance()
+        epoch = hub.get_info('epoch') or 0
         if self.prepare_epoch:
-            if kwargs['epoch'] > self.prepare_epoch:
+            if epoch > self.prepare_epoch:
                 total_qscore_loss = 0
                 for i in range(batch_size):
                     voxel_superpoints = inverse_mapping[coordinates[:, 0][inverse_mapping] == i]
@@ -2259,16 +2263,11 @@ class ForAINetV2OneFormer3D_XAwarequery(Base3DDetector):
 
             return batch_data_samples
     
-    def predict(self, batch_inputs_dict, batch_data_samples, **kwargs):
-    #def predict_rm_outputpoints(self, batch_inputs_dict, batch_data_samples, **kwargs):
-        t0 = time.time()            
+    def predict(self, batch_inputs_dict, batch_data_samples, **kwargs):         
         lidar_path = batch_data_samples[0].lidar_path
         base_name = os.path.basename(lidar_path)
         current_filename = os.path.splitext(base_name)[0]
-        t1 = time.time()                 
-        #########print(f"load pc: {(t1 - t0)*1000:.0f} ms")
-        #is_test = True
-        #if is_test:
+
         # if 'test' in lidar_path:
         if 'train' not in lidar_path:
             step_size = self.radius / 4
@@ -2292,8 +2291,6 @@ class ForAINetV2OneFormer3D_XAwarequery(Base3DDetector):
 
             # all_instance_labels = set(np.unique(pts_instance_gt))
             
-            ##########output_path = "work_dirs/bluepoint_th04fixed_03_priority_test_tobedelete"
-            #########output_path = "work_dirs/bluepoint_forinstancev2"
             output_path = self.test_cfg.get('output_dir', 'work_dirs/default_output')
             score_th1 = self.score_th
             score_th2 = 0.3
@@ -2389,28 +2386,6 @@ class ForAINetV2OneFormer3D_XAwarequery(Base3DDetector):
                     t8 = time.time()                 
                     #########print(f"postprocessing 1: {(t8 - t7)*1000:.0f} ms")  
                     ####### Apply both score and edge distance filtering
-                    '''
-                    final_valid_mask = valid_scores_mask & valid_scores_mask2
-
-                    masks = masks[final_valid_mask]
-                    scores = scores[final_valid_mask]
-
-                    # Nearest neighbor mapping for masks to pc1
-                    for mask, score in zip(masks, scores):
-                        mask_pc1 = self.nearest_neighbor_mapping(pc1, pc3, mask)
-                        mask_points = pc1_indices[mask_pc1].cpu().numpy()
-
-                        # Vectorized update of global instance mask and scores
-                        update_mask = score > global_instance_scores[mask_points]
-                        global_instance_scores[mask_points[update_mask]] = score
-                        all_pre_ins[mask_points[update_mask]] = max_instance
-
-                        if np.any(update_mask):
-                            # Add the new mask
-                            best_masks.append((mask_points, max_instance, score))
-
-                        #max_instance += 1'''
-
                     keep = torch.where(
                         torch.tensor(valid_scores_mask, device=pc3.device) &
                         torch.tensor(valid_scores_mask2, device=pc3.device)
@@ -2490,24 +2465,10 @@ class ForAINetV2OneFormer3D_XAwarequery(Base3DDetector):
                     last_results = results_list      
                     last_originids = originids  
                     last_batch_len = len(batch_data_samples)      
-                    t10 = time.time()                 
-                    #########print(f"postprocessing 3: {(t10 - t9)*1000:.0f} ms") 
-                    
-                    '''
-                    originids = pc3_indices.cpu().numpy()  # Use pc3_indices for ground truth labels
-                    # Get gt labels for pc3
-                    pc3_semantic_gt = pts_semantic_gt[originids]
-                    pc3_instance_gt = pts_instance_gt[originids]
-                    # Save each pc3 to a separate .ply file
-                    region_dir = f"work_dirs/to_be_delete/{current_filename}/region_0"
-                    region_dir = os.path.join(output_path, current_filename, f"region_0")
-                    region_ply_path = os.path.join(region_dir, "pc_ins_sem.ply")
-                    self.save_ply(pc3.cpu().numpy(), results_list[0].pts_semantic_mask[0], results_list[0].pts_instance_mask[1], region_ply_path, pc3_semantic_gt, pc3_instance_gt)
-                    '''
                 else: # 网络预测为tree的点数量为空
                     projected_semantic_logits = bi_semantic_logits[inverse_mapping2]
                     semantic_predictions_pc3 = torch.argmax(projected_semantic_logits, dim=1)
-                    #cylinder_current_semantic_pre = self.nearest_neighbor_mapping(pc1, pc3, semantic_predictions_pc3)
+
                     proj_logits   = bi_semantic_logits[inverse_mapping2]         # (N_pc3, C)
                     sem_pred_pc3  = torch.argmax(proj_logits, dim=1) 
                     if isinstance(sem_pred_pc3, np.ndarray):
@@ -2515,8 +2476,7 @@ class ForAINetV2OneFormer3D_XAwarequery(Base3DDetector):
                     else:
                         sem_pred_pc3 = sem_pred_pc3.to(pc3.device)
                     cylinder_current_semantic_pre = sem_pred_pc3[nn_idx_pc1]   
-                    #originids = torch.where(region_mask)[0].cpu().numpy()  # Move to CPU before using np.where
-                    #all_pre_sem = self.vote_semantic_labels(all_pre_sem, torch.where(region_mask)[0], cylinder_current_semantic_pre)                    
+                
                     ids_np = torch.where(region_mask)[0].cpu().numpy()                 # (N_pc1,)
                     sem_np = cylinder_current_semantic_pre.cpu().numpy().astype(int)   # (N_pc1,)
 
@@ -2530,53 +2490,38 @@ class ForAINetV2OneFormer3D_XAwarequery(Base3DDetector):
                 gc.collect()
      
             # Post-processing step
-            #final_semantic_labels = self.finalize_semantic_labels_old(all_pre_sem)
-            #ground_mask = (final_semantic_labels == 0)
-
             final_semantic_labels = votes_counter.argmax(1)         # (N_total,)
             final_semantic_labels[votes_counter.sum(1) == 0] = -1 # 未预测为ground、wood、leaf的点的label归为-1 
             ground_mask = (final_semantic_labels == 0)
 
             all_pre_ins[ground_mask] = -1 # 地面实例的实例label置为-1
-            t11 = time.time()                 
-            #print(f"postprocessing 5: {(t11 - t10)*1000:.0f} ms") 
+
             # Remove instances with fewer than 10 points  
             uniq, cnt = np.unique(all_pre_ins, return_counts=True)
             to_kill   = np.isin(all_pre_ins, uniq[(cnt < 10) & (uniq != -1)]) # 将点数少于10个的实例标签置为-1
             all_pre_ins[to_kill] = -1
-            t12 = time.time()
-            # print(f"postprocessing 6: {(t12 - t11)*1000:.0f} ms")
+
             # Remove replaced old masks
             unique_best_masks = []
             for mask_points, instance_id, score in best_masks:
                 if np.any(all_pre_ins[mask_points] == instance_id):
                     unique_best_masks.append((mask_points, instance_id, score))
-            t13 = time.time()                 
-            # print(f"postprocessing 7: {(t13 - t12)*1000:.0f} ms")
 
-            clean_all_pre_ins, merged_masks, merged_instance_scores = self.merge_overlapping_instances_by_score_speedup(all_pre_ins, unique_best_masks,overlap_threshold=score_th2)
-            t14 = time.time()                 
-            # print(f"postprocessing 8: {(t14 - t13)*1000:.0f} ms")
+            clean_all_pre_ins, merged_masks, merged_instance_scores = self.merge_overlapping_instances_by_score_speedup(all_pre_ins, unique_best_masks,overlap_threshold=score_th2)            
+ 
             # Re-label instances to ensure continuous labeling
             unique_labels = np.unique(clean_all_pre_ins)
             unique_labels = unique_labels[unique_labels >= 0]  # Exclude background label (-1)
             relabel_map = {old_label: new_label for new_label, old_label in enumerate(unique_labels)}
             relabel_map[-1] = -1  # Keep background as -1
             clean_all_pre_ins = np.vectorize(relabel_map.get)(clean_all_pre_ins)
-            t14 = time.time()                 
-            ######print(f"postprocessing 8: {(t14 - t13)*1000:.0f} ms")
+              
             # Save the final combined results
             if (self.save_ply_vis):
                 region_path = os.path.join(output_path, f"{current_filename}.ply")
                 self.save_ply_withscore(original_points.cpu().numpy(), final_semantic_labels, clean_all_pre_ins, merged_instance_scores, region_path, pts_semantic_gt, pts_instance_gt)
-            #self.save_bluepoints(original_points.cpu().numpy(), final_semantic_labels, clean_all_pre_ins, merged_instance_scores, region_path, pts_semantic_gt, pts_instance_gt)
-            
-            t15 = time.time()                 
-            ######print(f"postprocessing 9: {(t15 - t14)*1000:.0f} ms")
-            #for i, data_sample in enumerate(batch_data_samples):
-            #    data_sample.pred_pts_seg = results_list[i]
-            #    data_sample.pred_pts_seg['originids'] = originids
-                #data_sample.originids = originids
+            #self.save_bluepoints(original_points.cpu().numpy(), final_semantic_labels, clean_all_pre_ins, merged_instance_scores, region_path, pts_semantic_gt, pts_instance_gt)            
+       
             last_results[0].pts_semantic_mask = final_semantic_labels
             last_results[0].pts_instance_mask = clean_all_pre_ins
             if last_results is not None and len(last_results)==len(batch_data_samples):                 # 本帧里至少有一个 region 得到了结果
