@@ -1,3 +1,17 @@
 # Ignore Python bytecode
 *.pyc
 __pycache__/
+
+.vscode
+
+data/ForAINetV2/forainetv2_instance_data
+data/ForAINetV2/instance_mask
+data/ForAINetV2/points
+data/ForAINetV2/semantic_mask
+data/ForAINetV2/test_data
+data/ForAINetV2/train_val_data
+data/ForAINetV2/forainetv2_oneformer3d_infos_test.pkl
+data/ForAINetV2/forainetv2_oneformer3d_infos_train.pkl
+data/ForAINetV2/forainetv2_oneformer3d_infos_val.pkl
+
+work_dirs
